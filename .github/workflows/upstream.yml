@@ -1,0 +1,123 @@
+name: Upstream
+
+on:
+  schedule:
+    # NOTE: karukan master moves a few times a week, half of it dependency
+    # updates by Renovate, so once a week is enough.
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  # To start bottle.yml on the branch of the PR (see the last step).
+  actions: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Bump the formula if upstream master has moved
+        id: bump
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          formula=Formula/karukan-server.rb
+          current="$(sed -n 's|^  url "https://github.com/togatoga/karukan/archive/\([0-9a-f]*\)\.tar\.gz"|\1|p' "$formula")"
+          current_version="$(sed -n 's|^  version "\(.*\)"|\1|p' "$formula")"
+          latest="$(gh api repos/togatoga/karukan/commits/main --jq .sha)"
+          echo "current=$current ($current_version) latest=$latest"
+
+          if [ "$current" = "$latest" ]; then
+            echo 'already up to date'
+            exit 0
+          fi
+
+          # The version is the version of karukan-cli in Cargo.toml, then the
+          # date of the commit (see the README).
+          date="$(gh api "repos/togatoga/karukan/commits/$latest" --jq '.commit.committer.date[:10]')"
+          cargo="$(gh api "repos/togatoga/karukan/contents/karukan-cli/Cargo.toml?ref=$latest" --jq .content |
+            base64 -d | sed -n 's/^version = "\(.*\)"/\1/p' | head -1)"
+          if [ -z "$cargo" ]; then
+            echo '::error::no version in karukan-cli/Cargo.toml (moved to the workspace?)'
+            exit 1
+          fi
+          version="$cargo.${date//-/}"
+          echo "version=$version"
+
+          # NOTE: Two commits of the same day give the same version, and a
+          # bottle of the same version would replace the old one. Wait for a
+          # commit of a later day.
+          if [ "$version" = "$current_version" ]; then
+            echo "the version stays $version; waiting for a commit of a later day"
+            exit 0
+          fi
+
+          branch="karukan-server-$version"
+          if gh api "repos/$GITHUB_REPOSITORY/branches/$branch" >/dev/null 2>&1; then
+            echo "branch $branch already exists"
+            exit 0
+          fi
+
+          curl -fsSL -o /tmp/karukan.tar.gz "https://github.com/togatoga/karukan/archive/$latest.tar.gz"
+          sha="$(sha256sum /tmp/karukan.tar.gz | cut -d' ' -f1)"
+
+          # NOTE: The bottle block belongs to the old version. Drop it here and
+          # let bottle.yml write a fresh one after this lands on main.
+          perl -0pi -e 's/\n  bottle do\n.*?\n  end\n//s' "$formula"
+          sed -i "s|^  # pinned commit: .*|  # pinned commit: $latest ($date)|" "$formula"
+          sed -i "s|archive/$current.tar.gz|archive/$latest.tar.gz|" "$formula"
+          sed -i "s|^  version \".*\"|  version \"$version\"|" "$formula"
+          sed -i "0,/^  sha256 \"/s|^  sha256 \".*\"|  sha256 \"$sha\"|" "$formula"
+          git diff -- "$formula"
+
+          # shellcheck disable=SC2016 # the backticks are Markdown, in jq
+          commits="$(gh api "repos/togatoga/karukan/compare/$current...$latest" \
+            --jq '.commits[] | "- [`\(.sha[:7])`](\(.html_url)) \(.commit.message | split("\n")[0])"')"
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch -c "$branch"
+          git commit -am "karukan-server $version"
+          git push origin "$branch"
+
+          gh pr create --base main --head "$branch" \
+            --title "karukan-server $version" \
+            --body "$(cat <<EOF
+          karukan master moved to [\`${latest:0:7}\`](https://github.com/togatoga/karukan/commit/$latest) ($date).
+
+          $commits
+
+          [Compare](https://github.com/togatoga/karukan/compare/$current...$latest)
+
+          \`bottle.yml\` is started on this branch to build from source and test,
+          so **a build broken by upstream shows up in the checks of this PR**.
+
+          The bottle block was removed because it belongs to $current_version.
+          Merging this triggers \`bottle.yml\` on main, which builds an
+          \`arm64_tahoe\` bottle and writes the checksum back.
+          EOF
+          )"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+
+          # NOTE: A newer commit supersedes the bump PRs still open: close
+          # them, with their branches, so that only the latest one is left.
+          gh pr list --state open --json number,headRefName \
+            --jq ".[] | select(.headRefName | startswith(\"karukan-server-\")) | select(.headRefName != \"$branch\") | .number" |
+            while read -r n; do
+              gh pr close "$n" --delete-branch --comment "Superseded by karukan-server $version."
+            done
+
+      # NOTE: A PR opened with GITHUB_TOKEN triggers no pull_request workflow,
+      # so bottle.yml would not build it. workflow_dispatch is the exception;
+      # on a branch other than main, bottle.yml only builds and tests.
+      - name: Build and test the PR
+        if: steps.bump.outputs.branch != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run bottle.yml --ref '${{ steps.bump.outputs.branch }}'
