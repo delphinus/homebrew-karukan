@@ -24,7 +24,9 @@ When it starts for the first time, it downloads its models from Hugging Face int
 
 Upstream has released only v0.1.0 (2026-02), so the formula pins a commit of master. Its version is the version of `karukan-cli` in `Cargo.toml`, then the date of the commit (`0.1.0.20261114`), so that it goes up while the Cargo version stays the same.
 
-To move to another commit:
+`upstream.yml` checks upstream master every Monday. When it has moved, it opens a pull request that moves the formula to the latest commit and starts `bottle.yml` on its branch to build and test it (a pull request opened by GitHub Actions triggers no `pull_request` workflow), and closes the older bump pull requests still open. Two commits of the same day give the same version, so it waits for a commit of a later day.
+
+To move to another commit by hand:
 
 1. Change the commit in `url` (and the comment above it), `sha256` and the date in `version`.
 2. Remove the `bottle do ... end` block: it belongs to the old version.
