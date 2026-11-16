@@ -1,0 +1,114 @@
+name: Bottle
+
+on:
+  pull_request:
+    paths:
+      - Formula/**
+      - .github/workflows/bottle.yml
+  push:
+    branches:
+      - main
+    paths:
+      - Formula/**
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: bottle-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bottle:
+    # NOTE: macos-26 is the arm64 image. The bottle tag it produces is
+    # arm64_tahoe, which is what both of my machines want.
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      # NOTE: Homebrew/actions renamed its default branch to main and deleted
+      # master, so @master stopped resolving.
+      - uses: Homebrew/actions/setup-homebrew@main
+
+      # NOTE: Do not symlink a checkout into Library/Taps. brew does not pick
+      # such a tap up (`brew tap` does not list it), so let brew clone the tap
+      # itself and move it to the revision under test.
+      - name: Tap the revision under test
+        env:
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          brew tap delphinus/karukan
+          tap_dir="$(brew --repository delphinus/karukan)"
+          echo "TAP_DIR=$tap_dir" >> "$GITHUB_ENV"
+          git -C "$tap_dir" fetch origin "$SHA"
+          git -C "$tap_dir" checkout --detach "$SHA"
+          git -C "$tap_dir" log --oneline -1
+
+      - name: Read the formula version
+        id: formula
+        run: |
+          version="$(brew info --json=v2 delphinus/karukan/karukan-server |
+            jq -r '.formulae[0].versions.stable')"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=karukan-server-$version" >> "$GITHUB_OUTPUT"
+
+      # NOTE: This is where a build that no longer works with upstream master
+      # shows up, so it runs on pull_request too. --build-bottle rather than --build-from-source:
+      # `brew bottle` refuses a keg that was not built with it. It only skips
+      # post_install, the keg is still linked, so `brew test` works either way.
+      - name: Build from source
+        run: brew install --build-bottle --verbose delphinus/karukan/karukan-server
+
+      - name: Test
+        run: brew test delphinus/karukan/karukan-server
+
+      - name: Audit
+        run: brew audit --strict --online delphinus/karukan/karukan-server || true
+
+      - name: Build the bottle
+        if: github.event_name != 'pull_request'
+        run: |
+          brew bottle --json --no-rebuild \
+            --root-url="https://github.com/${{ github.repository }}/releases/download/${{ steps.formula.outputs.tag }}" \
+            delphinus/karukan/karukan-server
+          # NOTE: brew writes `name--version...` but downloads `name-version...`
+          # (Bottle::Filename#url_encode). Copy under the name brew will ask for
+          # or the bottle 404s. Copy rather than move: the json still refers to
+          # the original name and `--merge` runs after this.
+          for f in karukan-server--*.bottle.tar.gz; do
+            cp "$f" "${f/--/-}"
+          done
+          ls -la karukan-server-*
+
+      - name: Upload the bottle to a release
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag='${{ steps.formula.outputs.tag }}'
+          gh release view "$tag" --repo '${{ github.repository }}' >/dev/null 2>&1 ||
+            gh release create "$tag" --repo '${{ github.repository }}' \
+              --title "$tag" --notes 'Bottles for karukan-server ${{ steps.formula.outputs.version }}.'
+          # NOTE: karukan-server-[0-9]* so the `karukan-server--...` original is not
+          # uploaded too.
+          gh release upload "$tag" --repo '${{ github.repository }}' --clobber \
+            karukan-server-[0-9]*.bottle.tar.gz
+
+      - name: Write the checksums back into the formula
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          brew bottle --merge --write --no-commit ./karukan-server--*.bottle.json
+          cd "$TAP_DIR"
+          git diff --stat
+          if git diff --quiet; then
+            echo 'formula unchanged, nothing to commit'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git remote set-url origin \
+            "https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY.git"
+          git commit -am 'karukan-server ${{ steps.formula.outputs.version }}: add arm64_tahoe bottle [skip ci]'
+          git push origin HEAD:main
