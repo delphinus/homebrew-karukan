@@ -7,19 +7,14 @@
 class KarukanServer < Formula
   desc "Neural kana-kanji conversion server of karukan"
   homepage "https://github.com/togatoga/karukan"
-  # pinned commit: 4ed2450a4389c01cb8c929fabde419236eb11d53 (2026-11-14)
-  url "https://github.com/togatoga/karukan/archive/4ed2450a4389c01cb8c929fabde419236eb11d53.tar.gz"
+  # pinned commit: 2f0a00a1802538b668e11b49760d4a97f717b637 (2026-11-21)
+  url "https://github.com/togatoga/karukan/archive/2f0a00a1802538b668e11b49760d4a97f717b637.tar.gz"
   # The version of karukan-cli in Cargo.toml, then the date of the commit:
   # the Cargo version stays 0.1.0 while master moves.
-  version "0.1.0.20261114"
-  sha256 "ca429d412d8529c96f41afa175f8bbe47f2126ab168d2071391e54a80aea6689"
+  version "0.1.0.20261121"
+  sha256 "03b6c00bda59124d0312de49ed6f8de729f84c694b30a1e47b4b82cb97e4d1a4"
   license any_of: ["MIT", "Apache-2.0"]
   head "https://github.com/togatoga/karukan.git", branch: "main"
-
-  bottle do
-    root_url "https://github.com/delphinus/homebrew-karukan/releases/download/karukan-server-0.1.0.20261114"
-    sha256 cellar: :any_skip_relocation, arm64_tahoe: "d9eb16b6ca021d2f9222cd3cd751e1e233541c2f1f0844193376898812142094"
-  end
 
   depends_on "cmake" => :build
   depends_on "rust" => :build
