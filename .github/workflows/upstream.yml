@@ -41,10 +41,20 @@ jobs:
           # The version is the version of karukan-cli in Cargo.toml, then the
           # date of the commit (see the README).
           date="$(gh api "repos/togatoga/karukan/commits/$latest" --jq '.commit.committer.date[:10]')"
-          cargo="$(gh api "repos/togatoga/karukan/contents/karukan-cli/Cargo.toml?ref=$latest" --jq .content |
-            base64 -d | sed -n 's/^version = "\(.*\)"/\1/p' | head -1)"
+          toml() {
+            gh api "repos/togatoga/karukan/contents/$1?ref=$latest" --jq .content | base64 -d
+          }
+          cli="$(toml karukan-cli/Cargo.toml)"
+          if grep -q '^version\.workspace = true' <<<"$cli"; then
+            # NOTE: The crate inherits the version from [workspace.package] of
+            # the root Cargo.toml.
+            cargo="$(toml Cargo.toml |
+              sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' | head -1)"
+          else
+            cargo="$(sed -n 's/^version = "\(.*\)"/\1/p' <<<"$cli" | head -1)"
+          fi
           if [ -z "$cargo" ]; then
-            echo '::error::no version in karukan-cli/Cargo.toml (moved to the workspace?)'
+            echo '::error::no version of karukan-cli in Cargo.toml'
             exit 1
           fi
           version="$cargo.${date//-/}"
