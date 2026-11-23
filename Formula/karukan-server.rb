@@ -16,6 +16,11 @@ class KarukanServer < Formula
   license any_of: ["MIT", "Apache-2.0"]
   head "https://github.com/togatoga/karukan.git", branch: "main"
 
+  bottle do
+    root_url "https://github.com/delphinus/homebrew-karukan/releases/download/karukan-server-0.1.0.20261121"
+    sha256 cellar: :any_skip_relocation, arm64_tahoe: "0a123974d829f68c755731ee7cfc111a0c10e110a78476c25d446028a902ff5c"
+  end
+
   depends_on "cmake" => :build
   depends_on "rust" => :build
 
